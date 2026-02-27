@@ -1,0 +1,22 @@
+# secrets / env
+*.env
+bootstrap.env
+.env
+.env.*
+!*.env.example
+
+# ssh keys
+*.pem
+id_* 
+id_*.pub
+
+# cloudflared credentials
+**/.cloudflared/
+**/cloudflared/*.json
+/etc/cloudflared/*.json
+
+# compose overrides / local data
+**/pg_data/
+**/valkey_data/
+**/data/
+**/backups/
