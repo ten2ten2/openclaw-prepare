@@ -1,25 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# =============================
+###############################################################################
 # OpenClaw Host Prep (Common)
-# - 读取 /opt/openclaw/bootstrap.env（不入库）
-# - 系统加固：用户/SSH/UFW/fail2ban/自动安全更新
-# - 性能与稳定：swap、sysctl、关闭 THP、nofile
-# - 安装：Docker(官方仓库)、cloudflared(官方仓库)
-# - 生成：pgvector + valkey 的 infra compose（可选启动）
-# =============================
+# 目标：从“新建 VM 后”到“安装 OpenClaw 前”，把主机底座一次性配置好。
+#
+# 适配你的架构：
+# - 对外交互：Discord Bots（出站）+ Web 后台（Cloudflare Tunnel）+ LLM Gateway（内网/本机）
+# - 不开放 80/443 入站（Tunnel 模式）
+# - RAG：PostgreSQL + pgvector（容器）
+# - 缓存/队列：Valkey（容器）
+#
+# 本脚本会做：
+# - 系统更新 + 常用工具
+# - 创建 sudo 用户 + 写入 SSH key（可选）
+# - SSH 加固（有 key 才启用：禁 root 远程、禁密码）
+# - UFW（仅放行 SSH）+ fail2ban
+# - swap + sysctl（含 vm.overcommit_memory=1）+ 关闭 THP + 提升 nofile
+# - 安装 Docker（官方 APT 仓库，最新稳定）
+# - 安装 cloudflared（Cloudflare 官方仓库，最新稳定）
+# - 生成 /opt/openclaw/infra：pgvector(Postgres) + valkey 的 compose（默认不启动）
+###############################################################################
 
-PROFILE="${OPENCLAW_PROFILE:-4gb}"          # 由 wrapper 设定：4gb 或 8gb
+PROFILE="${OPENCLAW_PROFILE:-4gb}"                 # wrapper：4gb / 8gb
 BOOTSTRAP_ENV="${BOOTSTRAP_ENV:-/opt/openclaw/bootstrap.env}"
-START_INFRA="${START_INFRA:-0}"             # 1=生成后顺便 docker compose up -d
+START_INFRA="${START_INFRA:-0}"                    # 1=生成后直接 up -d
 
 log(){ echo -e "\n[+] $*\n"; }
 die(){ echo -e "\n[!] $*\n" >&2; exit 1; }
 need_root(){ [[ $EUID -eq 0 ]] || die "请用 sudo 运行"; }
 
 load_env(){
-  [[ -f "$BOOTSTRAP_ENV" ]] || die "未找到 $BOOTSTRAP_ENV 。请先从 templates/bootstrap.env.example 复制并填写真实值。"
+  [[ -f "$BOOTSTRAP_ENV" ]] || die "未找到 $BOOTSTRAP_ENV（请从 templates/bootstrap.env.example 复制并填写真实值）"
   set -a
   # shellcheck disable=SC1090
   source "$BOOTSTRAP_ENV"
@@ -30,9 +42,7 @@ load_env(){
   : "${HOSTNAME_FQDN:=openclaw-1}"
   : "${SSH_PORT:=22}"
   : "${OPENCLAW_BASE:=/opt/openclaw}"
-
-  # SSH_PUBKEY 建议必填：否则不会启用“禁密码/禁 root 登录”，避免锁死
-  : "${SSH_PUBKEY:=}"
+  : "${SSH_PUBKEY:=}"  # 可为空：为空则跳过“禁密码/禁 root”以避免锁死
 
   : "${POSTGRES_DB:=openclaw}"
   : "${POSTGRES_USER:=openclaw}"
@@ -43,11 +53,14 @@ load_env(){
 
 os_check(){
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" ]] || die "当前系统不是 Ubuntu（ID=${ID:-unknown}）。建议使用 Ubuntu 24.04.4 LTS。"
+  [[ "${ID:-}" == "ubuntu" ]] || die "当前系统不是 Ubuntu（ID=${ID:-unknown}）。建议 Ubuntu 24.04 LTS（noble）或更新。"
+  command -v dpkg >/dev/null 2>&1 || die "缺少 dpkg"
+  # 要求 >= 24.04（“最新 LTS”）
+  dpkg --compare-versions "${VERSION_ID}" ge "24.04" || die "Ubuntu 版本过旧：${VERSION_ID}，请用 24.04+"
 }
 
 apply_profile_defaults(){
-  # 4GB/8GB 的差异：swap 与默认资源上限
+  # 允许在 bootstrap.env 里覆盖这些值；未设置则按 4GB/8GB 默认
   if [[ "$PROFILE" == "8gb" ]]; then
     : "${SWAP_GB:=4}"
     : "${POSTGRES_MEM_LIMIT:=2200m}"
@@ -101,13 +114,13 @@ create_admin(){
   fi
 
   if [[ -n "$SSH_PUBKEY" ]]; then
-    log "写入 $ADMIN_USER 的 authorized_keys"
+    log "写入 $ADMIN_USER 的 SSH 公钥（authorized_keys）"
     install -d -m 700 "/home/$ADMIN_USER/.ssh"
     echo "$SSH_PUBKEY" > "/home/$ADMIN_USER/.ssh/authorized_keys"
     chmod 600 "/home/$ADMIN_USER/.ssh/authorized_keys"
     chown -R "$ADMIN_USER:$ADMIN_USER" "/home/$ADMIN_USER/.ssh"
   else
-    log "未设置 SSH_PUBKEY：将跳过 SSH 禁密码/禁 root（避免锁死）。建议尽快补上。"
+    log "未设置 SSH_PUBKEY：将跳过“禁密码/禁 root 远程”，避免锁死。建议尽快补上。"
   fi
 }
 
@@ -160,7 +173,7 @@ unattended_upgrades(){
 }
 
 swap_and_sysctl(){
-  log "Swap(${SWAP_GB}GB) + sysctl（Redis/网络/句柄）"
+  log "Swap(${SWAP_GB}GB) + sysctl（含 Redis/Valkey 推荐项）"
   if ! swapon --show | grep -q "/swapfile"; then
     fallocate -l "${SWAP_GB}G" /swapfile || dd if=/dev/zero of=/swapfile bs=1G count="${SWAP_GB}"
     chmod 600 /swapfile
@@ -173,7 +186,7 @@ swap_and_sysctl(){
 # Valkey/Redis 推荐：避免 fork / 内存分配失败
 vm.overcommit_memory=1
 
-# 减少换页倾向
+# 减少换页倾向（小内存机器很有用）
 vm.swappiness=10
 vm.vfs_cache_pressure=50
 
@@ -202,10 +215,12 @@ disable_thp(){
 [Unit]
 Description=Disable Transparent Huge Pages (THP)
 After=network.target
+
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c 'test -f /sys/kernel/mm/transparent_hugepage/enabled && echo never > /sys/kernel/mm/transparent_hugepage/enabled || true; test -f /sys/kernel/mm/transparent_hugepage/defrag && echo never > /sys/kernel/mm/transparent_hugepage/defrag || true'
 RemainAfterExit=yes
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -231,12 +246,10 @@ EOF
 }
 
 install_docker_latest(){
-  log "安装 Docker（官方 APT 仓库，最新稳定）"
-  # 按 Docker 官方文档执行 :contentReference[oaicite:9]{index=9}
+  log "安装 Docker（官方 APT 仓库：最新稳定）"
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
-
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     > /etc/apt/sources.list.d/docker.list
 
@@ -258,12 +271,15 @@ EOF
 }
 
 install_cloudflared_latest(){
-  log "安装 cloudflared（Cloudflare 官方包仓库，最新稳定）"
-  # Cloudflare 包仓库入口 :contentReference[oaicite:10]{index=10}
-  install -d --mode=0755 /usr/share/keyrings
-  curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
+  log "安装 cloudflared（Cloudflare 官方仓库：最新稳定）"
+  local codename
+  codename="$(lsb_release -cs)"  # noble
 
-  echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
+  install -d --mode=0755 /usr/share/keyrings
+  curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+    | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+
+  echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared ${codename} main" \
     > /etc/apt/sources.list.d/cloudflared.list
 
   apt-get update -y
@@ -275,12 +291,12 @@ render_infra(){
   local infra_dir="${OPENCLAW_BASE}/infra"
   install -d -m 750 "${infra_dir}/db-init" "${OPENCLAW_BASE}/data" "${OPENCLAW_BASE}/backups"
 
-  # pgvector 扩展名是 vector :contentReference[oaicite:11]{index=11}
+  # pgvector 扩展名是 vector
   cat >"${infra_dir}/db-init/01-pgvector.sql" <<'EOF'
 CREATE EXTENSION IF NOT EXISTS vector;
 EOF
 
-  # 生成 compose（用这里的变量值直接写死到文件，避免运行时再依赖 envsubst）
+  # 注意：不映射端口到宿主机 => 仅同 Docker 网络可访问（更安全）
   cat >"${infra_dir}/docker-compose.infra.yml" <<EOF
 services:
   postgres:
@@ -296,11 +312,16 @@ services:
       - ./db-init:/docker-entrypoint-initdb.d:ro
     command:
       - "postgres"
-      - "-c" ; "shared_buffers=${PG_SHARED_BUFFERS}"
-      - "-c" ; "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE}"
-      - "-c" ; "work_mem=${PG_WORK_MEM}"
-      - "-c" ; "maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM}"
-      - "-c" ; "max_connections=${PG_MAX_CONNECTIONS}"
+      - "-c"
+      - "shared_buffers=${PG_SHARED_BUFFERS}"
+      - "-c"
+      - "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE}"
+      - "-c"
+      - "work_mem=${PG_WORK_MEM}"
+      - "-c"
+      - "maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM}"
+      - "-c"
+      - "max_connections=${PG_MAX_CONNECTIONS}"
     mem_limit: ${POSTGRES_MEM_LIMIT}
 
   valkey:
@@ -320,9 +341,6 @@ volumes:
   pg_data:
   valkey_data:
 EOF
-
-  log "提示：pgvector/pgvector 的 pg18-trixie 标签可用（Docker Hub tags 可查）"
-  # 仅提示，不在脚本里联网校验
 }
 
 maybe_start_infra(){
