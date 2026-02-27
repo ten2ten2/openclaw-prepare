@@ -3,23 +3,14 @@ set -euo pipefail
 
 ###############################################################################
 # OpenClaw Host Prep (Common)
-# 目标：从“新建 VM 后”到“安装 OpenClaw 前”，把主机底座一次性配置好。
 #
-# 适配你的架构：
-# - 对外交互：Discord Bots（出站）+ Web 后台（Cloudflare Tunnel）+ LLM Gateway（内网/本机）
-# - 不开放 80/443 入站（Tunnel 模式）
-# - RAG：PostgreSQL + pgvector（容器）
-# - 缓存/队列：Valkey（容器）
-#
-# 本脚本会做：
-# - 系统更新 + 常用工具
-# - 创建 sudo 用户 + 写入 SSH key（可选）
-# - SSH 加固（有 key 才启用：禁 root 远程、禁密码）
-# - UFW（仅放行 SSH）+ fail2ban
-# - swap + sysctl（含 vm.overcommit_memory=1）+ 关闭 THP + 提升 nofile
-# - 安装 Docker（官方 APT 仓库，最新稳定）
-# - 安装 cloudflared（Cloudflare 官方仓库，最新稳定）
-# - 生成 /opt/openclaw/infra：pgvector(Postgres) + valkey 的 compose（默认不启动）
+# 从 “新建 Linode VM” 到 “安装 OpenClaw 前” 的主机底座：
+# - SSH key-only（可选但强烈建议）、禁 root 远程、fail2ban
+# - Tunnel 模式：UFW 只放行 SSH（不开放 80/443）
+# - swap + sysctl + 关闭 THP + 提升 nofile
+# - Docker（官方 APT 仓库：最新稳定）
+# - cloudflared（Cloudflare 官方 APT 仓库：最新稳定）
+# - 生成 /opt/openclaw/infra：pgvector(Postgres) + Valkey 的 compose（默认不启动）
 ###############################################################################
 
 PROFILE="${OPENCLAW_PROFILE:-4gb}"                 # wrapper：4gb / 8gb
@@ -53,14 +44,12 @@ load_env(){
 
 os_check(){
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" ]] || die "当前系统不是 Ubuntu（ID=${ID:-unknown}）。建议 Ubuntu 24.04 LTS（noble）或更新。"
+  [[ "${ID:-}" == "ubuntu" ]] || die "当前系统不是 Ubuntu（ID=${ID:-unknown}）。建议 Ubuntu 24.04 LTS 或更新。"
   command -v dpkg >/dev/null 2>&1 || die "缺少 dpkg"
-  # 要求 >= 24.04（“最新 LTS”）
   dpkg --compare-versions "${VERSION_ID}" ge "24.04" || die "Ubuntu 版本过旧：${VERSION_ID}，请用 24.04+"
 }
 
 apply_profile_defaults(){
-  # 允许在 bootstrap.env 里覆盖这些值；未设置则按 4GB/8GB 默认
   if [[ "$PROFILE" == "8gb" ]]; then
     : "${SWAP_GB:=4}"
     : "${POSTGRES_MEM_LIMIT:=2200m}"
@@ -130,7 +119,6 @@ ssh_hardening(){
 
   install -d /etc/ssh/sshd_config.d
   cat >/etc/ssh/sshd_config.d/99-openclaw.conf <<EOF
-# OpenClaw hardening
 Port ${SSH_PORT}
 PermitRootLogin no
 PasswordAuthentication no
@@ -173,7 +161,7 @@ unattended_upgrades(){
 }
 
 swap_and_sysctl(){
-  log "Swap(${SWAP_GB}GB) + sysctl（含 Redis/Valkey 推荐项）"
+  log "Swap(${SWAP_GB}GB) + sysctl（含 Valkey/Redis 推荐项）"
   if ! swapon --show | grep -q "/swapfile"; then
     fallocate -l "${SWAP_GB}G" /swapfile || dd if=/dev/zero of=/swapfile bs=1G count="${SWAP_GB}"
     chmod 600 /swapfile
@@ -183,26 +171,15 @@ swap_and_sysctl(){
   fi
 
   cat >/etc/sysctl.d/99-openclaw.conf <<'EOF'
-# Valkey/Redis 推荐：避免 fork / 内存分配失败
 vm.overcommit_memory=1
-
-# 减少换页倾向（小内存机器很有用）
 vm.swappiness=10
 vm.vfs_cache_pressure=50
-
-# 连接与队列
 net.core.somaxconn=4096
 net.ipv4.tcp_max_syn_backlog=4096
 net.ipv4.ip_local_port_range=10240 65535
-
-# 文件句柄
 fs.file-max=1048576
-
-# inotify
 fs.inotify.max_user_watches=524288
 fs.inotify.max_user_instances=1024
-
-# BBR（一般无害）
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
@@ -250,6 +227,7 @@ install_docker_latest(){
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
+
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     > /etc/apt/sources.list.d/docker.list
 
@@ -257,7 +235,6 @@ install_docker_latest(){
   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   systemctl enable --now docker
 
-  log "Docker 日志轮转 + live-restore"
   install -d /etc/docker
   cat >/etc/docker/daemon.json <<'EOF'
 {
@@ -271,33 +248,48 @@ EOF
 }
 
 install_cloudflared_latest(){
-  log "安装 cloudflared（Cloudflare 官方仓库：最新稳定）"
-  local codename
-  codename="$(lsb_release -cs)"  # noble
-
-  install -d --mode=0755 /usr/share/keyrings
-  curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-    | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-
-  echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared ${codename} main" \
+  log "安装 cloudflared（Cloudflare 官方 APT 仓库：最新稳定）"
+  sudo mkdir -p --mode=0755 /usr/share/keyrings
+  curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+  echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
     > /etc/apt/sources.list.d/cloudflared.list
-
   apt-get update -y
   apt-get install -y cloudflared
 }
 
 render_infra(){
-  log "生成 /opt/openclaw/infra（pgvector + valkey），不包含 OpenClaw 本体"
+  log "生成 /opt/openclaw/infra（pgvector + valkey）"
   local infra_dir="${OPENCLAW_BASE}/infra"
   install -d -m 750 "${infra_dir}/db-init" "${OPENCLAW_BASE}/data" "${OPENCLAW_BASE}/backups"
 
-  # pgvector 扩展名是 vector
+  # 初始化 pgvector 扩展
   cat >"${infra_dir}/db-init/01-pgvector.sql" <<'EOF'
 CREATE EXTENSION IF NOT EXISTS vector;
 EOF
 
-  # 注意：不映射端口到宿主机 => 仅同 Docker 网络可访问（更安全）
-  cat >"${infra_dir}/docker-compose.infra.yml" <<EOF
+  # 生成 .env（避免把密码写进 compose 文件；权限 600）
+  cat >"${infra_dir}/.env" <<EOF
+POSTGRES_DB=${POSTGRES_DB}
+POSTGRES_USER=${POSTGRES_USER}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
+PGVECTOR_IMAGE=${PGVECTOR_IMAGE}
+VALKEY_IMAGE=${VALKEY_IMAGE}
+
+POSTGRES_SHM_SIZE=${POSTGRES_SHM_SIZE}
+POSTGRES_MEM_LIMIT=${POSTGRES_MEM_LIMIT}
+VALKEY_MEM_LIMIT=${VALKEY_MEM_LIMIT}
+VALKEY_MAXMEM=${VALKEY_MAXMEM}
+
+PG_SHARED_BUFFERS=${PG_SHARED_BUFFERS}
+PG_EFFECTIVE_CACHE_SIZE=${PG_EFFECTIVE_CACHE_SIZE}
+PG_WORK_MEM=${PG_WORK_MEM}
+PG_MAINTENANCE_WORK_MEM=${PG_MAINTENANCE_WORK_MEM}
+PG_MAX_CONNECTIONS=${PG_MAX_CONNECTIONS}
+EOF
+  chmod 600 "${infra_dir}/.env"
+
+  cat >"${infra_dir}/docker-compose.infra.yml" <<'EOF'
 services:
   postgres:
     image: ${PGVECTOR_IMAGE}
