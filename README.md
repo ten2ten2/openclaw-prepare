@@ -1,4 +1,4 @@
-# OpenClawDotfiles (Ubuntu Generic)
+# openclaw-prepare (Ubuntu Generic)
 
 将一台 Ubuntu 24.04+ 服务器初始化到“可安装 OpenClaw”的状态。
 
