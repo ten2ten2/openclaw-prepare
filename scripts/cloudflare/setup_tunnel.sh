@@ -28,7 +28,6 @@ load_env(){
 }
 
 get_tunnel_uuid(){
-  # 如果 tunnel create 失败（例如已存在），用 list + jq 找 UUID
   sudo -u "${CF_RUN_USER}" -H bash -lc \
     "cloudflared tunnel list --output json" \
     | jq -r ".[] | select(.name==\"${CF_TUNNEL_NAME}\") | .id" \
@@ -39,7 +38,7 @@ main(){
   need_root
   load_env
 
-  command -v cloudflared >/dev/null 2>&1 || die "未安装 cloudflared（请先运行 scripts/linode/prep_4gb.sh 或 prep_8gb.sh）"
+  command -v cloudflared >/dev/null 2>&1 || die "未安装 cloudflared（先跑 scripts/linode/prep_4gb.sh 或 prep_8gb.sh）"
   command -v jq >/dev/null 2>&1 || die "缺少 jq（prep 脚本会安装）"
 
   log "Cloudflare 登录（会输出授权 URL，用浏览器打开完成授权）"
@@ -59,11 +58,14 @@ main(){
     echo "$out"
     UUID="$(get_tunnel_uuid || true)"
   fi
-  [[ -n "$UUID" ]] || die "未解析到 Tunnel UUID。你可以手动运行：cloudflared tunnel list"
+  [[ -n "$UUID" ]] || die "未解析到 Tunnel UUID（可手动运行：cloudflared tunnel list）"
 
   log "写入 /etc/cloudflared/config.yml"
   install -d /etc/cloudflared
-  install -m 600 "/home/${CF_RUN_USER}/.cloudflared/${UUID}.json" "/etc/cloudflared/${UUID}.json"
+
+  cred="/home/${CF_RUN_USER}/.cloudflared/${UUID}.json"
+  [[ -f "$cred" ]] || die "找不到凭据文件：$cred（确认 CF_RUN_USER 的 home 与 login 是否成功）"
+  install -m 600 "$cred" "/etc/cloudflared/${UUID}.json"
 
   cat >/etc/cloudflared/config.yml <<EOF
 tunnel: ${UUID}
@@ -84,7 +86,7 @@ EOF
   systemctl status cloudflared --no-pager
 
   log "完成 ✅ 访问：https://${CF_HOSTNAME}"
-  echo "注意：你的 Web 后台务必只监听 127.0.0.1（或 docker 仅映射到 127.0.0.1）"
+  echo "注意：Web 后台务必只监听 127.0.0.1（或 docker 仅映射到 127.0.0.1）"
 }
 
 main "$@"
