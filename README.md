@@ -24,8 +24,10 @@ Prepare an Ubuntu server for OpenClaw with dynamic RAM/CPU budgeting, pgvector/V
 
 ### 1) Clone on target host
 ```bash
-git clone <YOUR_REPO_URL> OpenClawDotfiles
-cd OpenClawDotfiles
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/ten2ten2/openclaw-prepare openclaw-prepare
+cd openclaw-prepare
 ```
 
 ### 2) Prepare bootstrap config
