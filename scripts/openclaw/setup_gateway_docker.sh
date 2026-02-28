@@ -27,6 +27,12 @@ load_env(){
   : "${OPENCLAW_GATEWAY_DIR:=/opt/openclaw/gateway}"
   : "${OPENCLAW_SHARED_NETWORK:=openclaw-shared}"
   : "${OPENCLAW_AUTOWIRE_INFRA:=1}"
+  : "${OPENCLAW_OFFICIAL_HOME_DIR:=/opt/openclaw/.openclaw}"
+  : "${OPENCLAW_MAIN_CONFIG_JSON:=${OPENCLAW_OFFICIAL_HOME_DIR}/openclaw.json}"
+  : "${OPENCLAW_WORKSPACE_DIR:=${OPENCLAW_OFFICIAL_HOME_DIR}/workspace}"
+  : "${OPENCLAW_SKILLS_DIR:=${OPENCLAW_OFFICIAL_HOME_DIR}/skills}"
+  : "${OPENCLAW_TOOLS_DIR:=${OPENCLAW_OFFICIAL_HOME_DIR}/tools}"
+  : "${OPENCLAW_AUTOWIRE_RUNTIME:=1}"
   : "${OPENCLAW_DOCKER_APT_PACKAGES:=}"
   : "${OPENCLAW_EXTRA_MOUNTS:=}"
   : "${OPENCLAW_HOME_VOLUME:=}"
@@ -120,21 +126,56 @@ networks:
 CFG
 }
 
+write_runtime_autowire_override(){
+  local override_file="$OPENCLAW_GATEWAY_DIR/docker-compose.runtime.override.yml"
+  [[ "${OPENCLAW_AUTOWIRE_RUNTIME}" == "1" ]] || return 0
+
+  log "Writing runtime autowire override: $override_file"
+  cat > "$override_file" <<CFG
+services:
+  openclaw-gateway:
+    volumes:
+      - ${OPENCLAW_OFFICIAL_HOME_DIR}:/root/.openclaw
+    environment:
+      - OPENCLAW_BOOTSTRAP_CONFIG=/root/.openclaw/openclaw.json
+      - OPENCLAW_WORKSPACE_DIR=/root/.openclaw/workspace
+      - OPENCLAW_SKILLS_DIR=/root/.openclaw/skills
+      - OPENCLAW_TOOLS_DIR=/root/.openclaw/tools
+CFG
+}
+
 start_gateway(){
   log "Starting openclaw-gateway with resource override"
   (
     cd "$OPENCLAW_GATEWAY_DIR"
     if [[ "${OPENCLAW_AUTOWIRE_INFRA}" == "1" ]]; then
-      docker compose \
-      -f docker-compose.yml \
-      -f docker-compose.resource.override.yml \
-      -f docker-compose.infra.override.yml \
-      up -d openclaw-gateway
+      if [[ "${OPENCLAW_AUTOWIRE_RUNTIME}" == "1" ]]; then
+        docker compose \
+        -f docker-compose.yml \
+        -f docker-compose.resource.override.yml \
+        -f docker-compose.infra.override.yml \
+        -f docker-compose.runtime.override.yml \
+        up -d openclaw-gateway
+      else
+        docker compose \
+        -f docker-compose.yml \
+        -f docker-compose.resource.override.yml \
+        -f docker-compose.infra.override.yml \
+        up -d openclaw-gateway
+      fi
     else
-      docker compose \
-      -f docker-compose.yml \
-      -f docker-compose.resource.override.yml \
-      up -d openclaw-gateway
+      if [[ "${OPENCLAW_AUTOWIRE_RUNTIME}" == "1" ]]; then
+        docker compose \
+        -f docker-compose.yml \
+        -f docker-compose.resource.override.yml \
+        -f docker-compose.runtime.override.yml \
+        up -d openclaw-gateway
+      else
+        docker compose \
+        -f docker-compose.yml \
+        -f docker-compose.resource.override.yml \
+        up -d openclaw-gateway
+      fi
     fi
   )
 }
@@ -157,6 +198,7 @@ main(){
   run_official_setup
   write_resource_override
   write_infra_autowire_override
+  write_runtime_autowire_override
   start_gateway
   print_hints
 }

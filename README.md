@@ -62,6 +62,27 @@ sudo bash scripts/cloudflare/setup_tunnel.sh
 8. If `OPENCLAW_ENABLE_DOCKER_GATEWAY=1`, run official OpenClaw Docker onboarding and apply resource override compose file
 9. Print applied RAM/CPU budget summary
 
+## OpenClaw Official Home Scaffold
+Prep initializes a persistent OpenClaw home scaffold under `/opt/openclaw/.openclaw` by default:
+- workspace: `/opt/openclaw/.openclaw/workspace`
+- skills: `/opt/openclaw/.openclaw/skills`
+- tools: `/opt/openclaw/.openclaw/tools`
+- official config JSON: `/opt/openclaw/.openclaw/openclaw.json`
+
+OpenClaw config JSON is repo-initialized once (preserved on reruns).
+It is mounted into gateway as `/root/.openclaw/openclaw.json`.
+
+Default runtime JSON schema:
+```json
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/root/.openclaw/workspace"
+    }
+  }
+}
+```
+
 ## Dynamic Budget Rules
 Input:
 - `R = RAM_GB`
@@ -97,8 +118,12 @@ When `OPENCLAW_ENABLE_DOCKER_GATEWAY=1`, prep runs:
 - executes upstream `docker-setup.sh`
 - writes `docker-compose.resource.override.yml` for `openclaw-gateway`
 - auto-wires infra connectivity via `docker-compose.infra.override.yml` when `OPENCLAW_AUTOWIRE_INFRA=1`
+- auto-wires runtime mounts/env via `docker-compose.runtime.override.yml` when `OPENCLAW_AUTOWIRE_RUNTIME=1`
 - attaches both stacks to `OPENCLAW_SHARED_NETWORK` (default: `openclaw-shared`)
 - starts gateway using base + override compose files
+
+Runtime scaffold note:
+- skills/tools directories are initialized only (no automatic skill/tool install in prep)
 
 Dashboard token helper:
 ```bash

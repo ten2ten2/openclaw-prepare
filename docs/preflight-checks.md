@@ -17,6 +17,7 @@
 - HDD root disk (`ROTA=1`) warning for RAG/index/checkpoint workloads
 - Low-memory degraded-mode warnings can appear during dynamic budgeting
 - Reminder: `4 GiB` is startup minimum
+- Runtime scaffold initializes workspace/skills/tools directories only; it does not auto-install skills/tools repositories
 
 ## Behavior Controls
 - `PREFLIGHT_STRICT=1` and `ALLOW_WEAK_HOST=0`: exit on failures
