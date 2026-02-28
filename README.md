@@ -127,6 +127,42 @@ When `OPENCLAW_ENABLE_DOCKER_GATEWAY=1`, prep runs:
 Runtime scaffold note:
 - skills/tools directories are initialized only (no automatic skill/tool install in prep)
 
+## Optional Personalization Pack
+You can optionally import a local personalization pack from this repo into OpenClaw home.
+
+Default behavior:
+- `OPENCLAW_IMPORT_PERSONALIZATION=0` (disabled)
+- `OPENCLAW_PERSONALIZATION_DIR` defaults to `templates/openclaw-personalization`
+- `OPENCLAW_PERSONALIZATION_OVERWRITE=1` (enabled): same-name files in `/opt/openclaw/.openclaw` will be overridden
+
+Enable import:
+```bash
+OPENCLAW_IMPORT_PERSONALIZATION=1 sudo -E bash scripts/ubuntu/prep.sh
+```
+
+Import later without re-running full prep:
+```bash
+sudo -E bash scripts/openclaw/import_personalization.sh
+```
+
+Disable override (preserve existing files):
+```bash
+OPENCLAW_IMPORT_PERSONALIZATION=1 \
+OPENCLAW_PERSONALIZATION_OVERWRITE=0 \
+sudo -E bash scripts/ubuntu/prep.sh
+```
+
+Import later without override:
+```bash
+OPENCLAW_PERSONALIZATION_OVERWRITE=0 \
+sudo -E bash scripts/openclaw/import_personalization.sh
+```
+
+Import mode:
+- No mapping rules are applied
+- Files are copied directly from `OPENCLAW_PERSONALIZATION_DIR` into `OPENCLAW_OFFICIAL_HOME_DIR`
+- Script logs include an explicit warning before override copy is executed
+
 Dashboard token helper:
 ```bash
 cd /opt/openclaw/gateway

@@ -56,6 +56,9 @@ load_env(){
   : "${OPENCLAW_DOCKER_APT_PACKAGES:=}"
   : "${OPENCLAW_EXTRA_MOUNTS:=}"
   : "${OPENCLAW_HOME_VOLUME:=}"
+  : "${OPENCLAW_IMPORT_PERSONALIZATION:=0}"
+  : "${OPENCLAW_PERSONALIZATION_DIR:=${REPO_ROOT}/templates/openclaw-personalization}"
+  : "${OPENCLAW_PERSONALIZATION_OVERWRITE:=1}"
   : "${ENABLE_ZRAM:=1}"
   : "${ENABLE_SWAPFILE:=1}"
 }
@@ -156,6 +159,7 @@ main(){
   OPENCLAW_AUTOWIRE_INFRA_JSON=$([[ "${OPENCLAW_AUTOWIRE_INFRA}" == "1" ]] && echo true || echo false)
   OPENCLAW_AUTOWIRE_RUNTIME_JSON=$([[ "${OPENCLAW_AUTOWIRE_RUNTIME}" == "1" ]] && echo true || echo false)
   init_openclaw_runtime_layout
+  import_openclaw_personalization
   write_openclaw_bootstrap_json
 
   if [[ "${OPENCLAW_ENABLE_DOCKER_GATEWAY}" == "1" ]]; then
