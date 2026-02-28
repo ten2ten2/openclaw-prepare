@@ -1,5 +1,7 @@
 # Preflight Checks
 
+Language: **English** | [简体中文](preflight-checks.zh-CN.md) | [繁體中文](preflight-checks.zh-TW.md)
+
 `scripts/ubuntu/prep.sh` runs preflight checks before mutation.
 
 ## Blocking Checks (Default)

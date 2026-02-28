@@ -1,5 +1,7 @@
 # Tuning Matrix (Dynamic Budget + RAM Tier Compatibility)
 
+Language: **English** | [简体中文](tuning-matrix.zh-CN.md) | [繁體中文](tuning-matrix.zh-TW.md)
+
 This project keeps RAM tiers (`S/M/L/XL`) for compatibility, then applies a dynamic budget pass that prioritizes OpenClaw and recalculates infra limits.
 
 ## Budget Order

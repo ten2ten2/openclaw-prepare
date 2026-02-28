@@ -1,5 +1,7 @@
 # openclaw-prepare (Ubuntu Generic)
 
+Language: **English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
+
 Prepare an Ubuntu server for OpenClaw with dynamic RAM/CPU budgeting, pgvector/Valkey infra, and OpenClaw Docker Gateway onboarding.
 
 ## Goals
