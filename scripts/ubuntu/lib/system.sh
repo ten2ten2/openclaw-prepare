@@ -6,9 +6,9 @@ apt_basics(){
   apt-get update -y
   apt-get upgrade -y
   apt-get install -y \
-    ca-certificates curl gnupg lsb-release \
+    ca-certificates curl wget gnupg lsb-release \
     ufw fail2ban unattended-upgrades \
-    chrony git jq htop vim util-linux
+    chrony git jq tzdata unzip zip rsync tmux htop lsof vim util-linux
   systemctl enable --now chrony || true
 }
 
